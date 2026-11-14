@@ -79,3 +79,25 @@ if res_api.status_code == 200:
     for area, count in remain_counts.items():
         print(f"{area}：剩餘 {count} 席")
 
+import csv
+import json
+import requests
+from bs4 import BeautifulSoup
+
+# ==========================================
+# 第三部分：將資料寫入 CSV 檔案 (Load)
+# ==========================================
+csv_file_path = "opentix_remain_seats.csv"
+
+# 開啟檔案準備寫入 (encoding='utf-8-sig' 確保用 Excel 開啟中文不會變亂碼)
+with open(csv_file_path, mode="w", newline="", encoding="utf-8-sig") as file:
+  writer = csv.writer(file)
+
+  # 1. 寫入 CSV 的標題列 (Header)
+  writer.writerow(["票區資訊", "剩餘座位數"])
+
+  # 2. 把 remain_counts 字典裡的資料一筆一筆寫進去
+  for area, count in remain_counts.items():
+    writer.writerow([area, count])
+
+print(f"資料已經成功存入 {csv_file_path} 囉！")
