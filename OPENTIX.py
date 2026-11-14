@@ -101,3 +101,91 @@ with open(csv_file_path, mode="w", newline="", encoding="utf-8-sig") as file:
     writer.writerow([area, count])
 
 print(f"資料已經成功存入 {csv_file_path} 囉！")
+
+from datetime import datetime
+import csv
+import json
+import time
+from bs4 import BeautifulSoup
+import requests
+
+
+# 將爬蟲與 ETL 流程包成一個函式
+def run_etl_task():
+  print(f'\n--- 開始執行爬蟲與 ETL 任務：{datetime.now()} ---')
+
+  event_url = 'https://www.opentix.life/event/2089980031975464960'
+  headers = {
+      'User-Agent': (
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/537.36'
+          ' (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
+      ),
+      'Referer': 'https://www.opentix.life/',
+  }
+
+  # 1. 抓取網頁基本資訊
+  res_html = requests.get(event_url, headers=headers)
+  if res_html.status_code == 200:
+    soup = BeautifulSoup(res_html.text, 'html.parser')
+    h1_tag = soup.find('h1')
+    if h1_tag:
+      print('節目名稱：', h1_tag.text.strip())
+
+  # 2. 抓取動態 API 座位資料
+  seats_api_url = (
+      'https://csm.api.opentix.life/events/2066455530077421569/seats'
+  )
+  res_api = requests.get(seats_api_url, headers=headers)
+
+  if res_api.status_code == 200:
+    json_data = json.loads(res_api.text)
+    seats_list = json_data['result']
+
+    remain_counts = {}
+    for seat in seats_list:
+      section_id = seat['sectionId']
+      floor_id = seat['floorId']
+      status = seat['status']
+      key = f'{floor_id} (區域ID: {section_id})'
+
+      if key not in remain_counts:
+        remain_counts[key] = 0
+      if status == 0:
+        remain_counts[key] += 1
+
+    # 3. 產生存檔路徑（加上時間戳記，確保歷史資料不會被覆蓋）
+    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+    csv_file_path = f'opentix_remain_seats_{timestamp_str}.csv'
+
+    with open(csv_file_path, mode='w', newline='', encoding='utf-8-sig') as file:
+      writer = csv.writer(file)
+      writer.writerow(['票區資訊', '剩餘座位數', '記錄時間'])
+
+      current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+      for area, count in remain_counts.items():
+        writer.writerow([area, count, current_time])
+
+    print(f'資料已成功存入歷史檔案：{csv_file_path}')
+
+
+# ==========================================
+# 主程式：定時循環觸發 (Orchestrator 概念)
+# ==========================================
+if __name__ == '__main__':
+  print('自動化排程啟動！程式將會定時執行。')
+  print('提示：如果想隨時停止程式，請在終端機按下鍵盤的 Ctrl + C')
+
+  # 設定間隔時間（秒）：
+  # 測試時可以先設短一點（例如 30 秒或 60 秒）看效果
+  # 正式執行時可以改長（例如 1 小時 = 3600 秒，或是 30 分鐘 = 1800 秒）
+  interval_seconds = 60
+
+  while True:
+    try:
+      # 執行 ETL 任務
+      run_etl_task()
+    except Exception as e:
+      print('執行過程中發生錯誤：', e)
+
+    print(f'等待下一次執行中... (將於 {interval_seconds} 秒後再次觸發)')
+    time.sleep(interval_seconds)
