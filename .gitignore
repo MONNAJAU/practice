@@ -1,0 +1,14 @@
+# 環境變數與金鑰（絕對不要上傳）
+.env
+.env.*
+!.env.example
+
+# Python 與虛擬環境
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# macOS 系統檔
+.DS_Store
