@@ -1,191 +1,104 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# <a href="https://colab.research.google.com/github/MONNAJAU/practice/blob/main/OPENTIX.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-
-# In[1]:
-
-
 import requests
-from bs4 import BeautifulSoup
 import json
+import time
+from datetime import datetime
+import pymysql
 
 # ==========================================
-# 第一部分：靜態網頁爬取（取得節目基本資訊）
+# 1. 資料庫設定與寫入函式
 # ==========================================
-event_url = 'https://www.opentix.life/event/2089980031975464960'
+db_config = {
+    'host': 'localhost',
+    'user': 'root',          # 請換成你的 MySQL 帳號
+    'password': 'password',  # 請換成你的 MySQL 密碼
+    'database': 'opentix_db',
+    'charset': 'utf8mb4'
+}
 
+def save_to_mysql(records):
+    if not records:
+        return
+    conn = pymysql.connect(**db_config)
+    cursor = conn.cursor()
+    sql = """
+        INSERT INTO opentix_tickets (EVENT_NAME, EVENT_TIME, REMAIN_SEATS, PRICE)
+        VALUES (%s, %s, %s, %s)
+    """
+    try:
+        cursor.executemany(sql, records)
+        conn.commit()
+        print(f"成功寫入 {len(records)} 筆資料到 MySQL！")
+    except Exception as e:
+        conn.rollback()
+        print("資料庫寫入失敗：", e)
+    finally:
+        cursor.close()
+        conn.close()
+
+# ==========================================
+# 2. 爬蟲設定與主程式
+# ==========================================
 headers = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36',
     'Referer': 'https://www.opentix.life/'
 }
 
-# 發送 GET 請求並解析 HTML
-res_html = requests.get(event_url, headers=headers)
-print("網頁狀態碼：", res_html.status_code)
+# 設定要爬取的頁數範圍（測試階段先抓第 1 頁，確認無誤可改為 while 迴圈抓全部）
+max_pages = 1
+all_records = []
 
-soup = BeautifulSoup(res_html.text, 'html.parser')
+for page in range(1, max_pages + 1):
+    list_url = f'https://csm.api.opentix.life/programs?page={page}&rowCount=10'
+    res_list = requests.get(list_url, headers=headers)
+    
+    if res_list.status_code != 200:
+        print(f"第 {page} 頁列表請求失敗")
+        break
+        
+    list_data = json.loads(res_list.text)
+    programs = list_data.get('result', {}).get('data', [])
+    
+    if not programs:
+        break
+        
+    for prog in programs:
+        prog_id = prog['id']
+        prog_name = prog['name']
+        print(f"正在爬取節目：{prog_name} (ID: {prog_id})")
+        
+        # 請求單檔節目詳細資料 API
+        detail_url = f'https://csm.api.opentix.life/programs/{prog_id}'
+        res_detail = requests.get(detail_url, headers=headers)
+        
+        if res_detail.status_code == 200:
+            detail_data = json.loads(res_detail.text)['result']
+            event_venues = detail_data.get('eventVenues', [])
+            
+            for venue in event_venues:
+                events = venue.get('events', [])
+                for event in events:
+                    # 將 Unix 時間戳記轉換為可讀的日期時間字串
+                    start_ts = event.get('startDateTime')
+                    event_time_str = datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M:%S') if start_ts else '未定'
+                    
+                    # 取得各票區票價與剩餘席次
+                    group_sections = event.get('groupSections', {})
+                    for group_key, sections in group_sections.items():
+                        for sec in sections:
+                            price = sec.get('price', 0)
+                            remain_seats = sec.get('quantity', {}).get('remainingQuantity', 0)
+                            
+                            # 整理成 tuple 準備批次寫入資料庫
+                            all_records.append((prog_name, event_time_str, remain_seats, price))
+                            
+        # 禮貌性暫停 0.5 秒，避免請求過快
+        time.sleep(0.5)
 
-# 抓取網頁標題
-title_tag = soup.find('title')
-if title_tag:
-    print("網頁標題：", title_tag.text.strip())
-
-# 抓取 H1 主標題
-h1_tag = soup.find('h1')
-if h1_tag:
-    print("節目名稱：", h1_tag.text.strip())
-
-# 抓取 meta description 節目摘要
-meta_desc = soup.find('meta', attrs={'name': 'description'})
-if meta_desc:
-    print("節目摘要：", meta_desc['content'])
-
+# 印出前 5 筆抓到的資料預覽
 print("-" * 50)
+print(f"總共整理出 {len(all_records)} 筆票區資料，前 5 筆預覽：")
+for r in all_records[:5]:
+    print(r)
 
-# ==========================================
-# 第二部分：動態 API 爬取（取得各票區剩餘座位）
-# ==========================================
-seats_api_url = 'https://csm.api.opentix.life/events/2066455530077421569/seats'
-
-# 發送 GET 請求並將回傳的字串轉為 JSON 物件
-res_api = requests.get(seats_api_url, headers=headers)
-print("API 狀態碼：", res_api.status_code)
-
-if res_api.status_code == 200:
-    json_data = json.loads(res_api.text)
-    seats_list = json_data['result']
-
-    # 建立空字典用來累計各票區剩餘座位（格式：{'票區ID': 數量}）
-    remain_counts = {}
-
-    for seat in seats_list:
-        section_id = seat['sectionId']
-        floor_id = seat['floorId']
-        status = seat['status']
-
-        # 組合樓層與票區 ID 當作標籤
-        key = f"{floor_id} (區域ID: {section_id})"
-
-        if key not in remain_counts:
-            remain_counts[key] = 0
-
-        # status 為 0 代表尚未售出的空位
-        if status == 0:
-            remain_counts[key] += 1
-
-    # 印出各區統計結果
-    print("各票區剩餘座位數統計：")
-    for area, count in remain_counts.items():
-        print(f"{area}：剩餘 {count} 席")
-
-import csv
-import json
-import requests
-from bs4 import BeautifulSoup
-
-# ==========================================
-# 第三部分：將資料寫入 CSV 檔案 (Load)
-# ==========================================
-csv_file_path = "opentix_remain_seats.csv"
-
-# 開啟檔案準備寫入 (encoding='utf-8-sig' 確保用 Excel 開啟中文不會變亂碼)
-with open(csv_file_path, mode="w", newline="", encoding="utf-8-sig") as file:
-  writer = csv.writer(file)
-
-  # 1. 寫入 CSV 的標題列 (Header)
-  writer.writerow(["票區資訊", "剩餘座位數"])
-
-  # 2. 把 remain_counts 字典裡的資料一筆一筆寫進去
-  for area, count in remain_counts.items():
-    writer.writerow([area, count])
-
-print(f"資料已經成功存入 {csv_file_path} 囉！")
-
-from datetime import datetime
-import csv
-import json
-import time
-from bs4 import BeautifulSoup
-import requests
-
-
-# 將爬蟲與 ETL 流程包成一個函式
-def run_etl_task():
-  print(f'\n--- 開始執行爬蟲與 ETL 任務：{datetime.now()} ---')
-
-  event_url = 'https://www.opentix.life/event/2089980031975464960'
-  headers = {
-      'User-Agent': (
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/537.36'
-          ' (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
-      ),
-      'Referer': 'https://www.opentix.life/',
-  }
-
-  # 1. 抓取網頁基本資訊
-  res_html = requests.get(event_url, headers=headers)
-  if res_html.status_code == 200:
-    soup = BeautifulSoup(res_html.text, 'html.parser')
-    h1_tag = soup.find('h1')
-    if h1_tag:
-      print('節目名稱：', h1_tag.text.strip())
-
-  # 2. 抓取動態 API 座位資料
-  seats_api_url = (
-      'https://csm.api.opentix.life/events/2066455530077421569/seats'
-  )
-  res_api = requests.get(seats_api_url, headers=headers)
-
-  if res_api.status_code == 200:
-    json_data = json.loads(res_api.text)
-    seats_list = json_data['result']
-
-    remain_counts = {}
-    for seat in seats_list:
-      section_id = seat['sectionId']
-      floor_id = seat['floorId']
-      status = seat['status']
-      key = f'{floor_id} (區域ID: {section_id})'
-
-      if key not in remain_counts:
-        remain_counts[key] = 0
-      if status == 0:
-        remain_counts[key] += 1
-
-    # 3. 產生存檔路徑（加上時間戳記，確保歷史資料不會被覆蓋）
-    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_file_path = f'opentix_remain_seats_{timestamp_str}.csv'
-
-    with open(csv_file_path, mode='w', newline='', encoding='utf-8-sig') as file:
-      writer = csv.writer(file)
-      writer.writerow(['票區資訊', '剩餘座位數', '記錄時間'])
-
-      current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-      for area, count in remain_counts.items():
-        writer.writerow([area, count, current_time])
-
-    print(f'資料已成功存入歷史檔案：{csv_file_path}')
-
-
-# ==========================================
-# 主程式：定時循環觸發 (Orchestrator 概念)
-# ==========================================
-if __name__ == '__main__':
-  print('自動化排程啟動！程式將會定時執行。')
-  print('提示：如果想隨時停止程式，請在終端機按下鍵盤的 Ctrl + C')
-
-  # 設定間隔時間（秒）：
-  # 測試時可以先設短一點（例如 30 秒或 60 秒）看效果
-  # 正式執行時可以改長（例如 1 小時 = 3600 秒，或是 30 分鐘 = 1800 秒）
-  interval_seconds = 60
-
-  while True:
-    try:
-      # 執行 ETL 任務
-      run_etl_task()
-    except Exception as e:
-      print('執行過程中發生錯誤：', e)
-
-    print(f'等待下一次執行中... (將於 {interval_seconds} 秒後再次觸發)')
-    time.sleep(interval_seconds)
+# 寫入 MySQL 資料庫
+save_to_mysql(all_records)
