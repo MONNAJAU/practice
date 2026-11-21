@@ -13,6 +13,7 @@ from linebot.v3.messaging import (
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from seat_service import query_seats
 
 load_dotenv()
 
@@ -43,14 +44,23 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-    user_text = event.message.text
+    user_text = (event.message.text or "").strip()
+
+    if user_text.startswith("查") or user_text in ("1樓", "2樓", "3樓", "4樓", "輪椅", "有票", "餘票", "全部"):
+        keyword = user_text[1:].strip() if user_text.startswith("查") else user_text
+        reply_text = query_seats(keyword)
+    else:
+        reply_text = (
+            f"收到：{user_text}\n"
+            "想查剩餘座位可以輸入：查 1樓、2樓、3樓、4樓、輪椅 或 有票"
+        )
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=f"收到：{user_text}")],
+                messages=[TextMessage(text=reply_text)],
             )
         )
 
